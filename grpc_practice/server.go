@@ -5,8 +5,9 @@ import (
 	"log"
 	"net"
 
+	"hello/chat"
+
 	"google.golang.org/grpc"
-	"local.packages/chat"
 )
 
 func main() {

@@ -8,10 +8,11 @@ import (
 	"math/rand"
 	"time"
 
+	pb "routeguide/pb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/examples/data"
-	pb "local.packages/pb"
 )
 
 var (

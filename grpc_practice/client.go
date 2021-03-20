@@ -6,7 +6,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
-	"local.packages/chat"
+	"hello/chat"
 )
 
 func main() {

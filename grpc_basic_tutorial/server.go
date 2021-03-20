@@ -20,7 +20,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 
-	pb "local.packages/pb"
+	pb "routeguide/pb"
 )
 
 var (

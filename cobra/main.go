@@ -15,7 +15,7 @@ limitations under the License.
 */
 package main
 
-import "local.packages/cmd"
+import "cobra_practice/cmd"
 
 func main() {
 	cmd.Execute()
