@@ -1,0 +1,5 @@
+module dyn
+
+go 1.15
+
+require k8s.io/client-go v0.20.4 // indirect
