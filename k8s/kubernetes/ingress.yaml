@@ -1,0 +1,21 @@
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: ngnix
+    ingress.kubernetes.io/rewrite-target: /
+  labels:
+    app: advent
+  name: advent
+spec:
+  backend:
+    serviceName: advent
+    servicePort: 80
+  rules:
+  - host: advent.test
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: advent
+          servicePort: 80

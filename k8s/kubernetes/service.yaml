@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: advent
+  labels:
+    app: advent
+spec:
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: advent
