@@ -1,0 +1,1 @@
+Many search engines incorporate an inverted index
