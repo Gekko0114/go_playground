@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/hcl/parser"
@@ -244,8 +247,249 @@ func Dockerfile2LLB(ctx context.Context, dt []byte, opt ConvertOpt) (*llb.State,
 							}
 						}
 					}
+					if isScratch {
+						d.state = llb.Scratch()
+					} else {
+						d.state = llb.image(d.stage.BaseName, dfCmd(d.stage.SourceCode), llb.Platform(*platform), opt.ImageResolveMode, llb.WithCustomName(prefixCommand(d, "FROM "+d.stage.BaseName, opt.PrefixPlatform, platform)))
+					}
+					d.platform = platform
+					return nil
 				})
-			}
+			}(i, d)
 		}
 	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, nil, err
+	}
+
+	buildContext := &mutableOutput{}
+	ctxPaths := map[string]struct{}{}
+
+	for _, d := range allDispatchStates.states {
+		if !isReachable(target, d) {
+			continue
+		}
+		if d.base != nil {
+			d.state = d.base.state
+			d.platform = d.base.platform
+			d.image = clone(d.base.image)
+		}
+
+		if _, ok := shell.BuildEnvs(d.image.Config.Env)["PATH"]; !ok {
+			d.image.Config.Env = append(d.image.Config.Env, "PATH="+system.DefaultPathEnv)
+		}
+
+		for _, env := range d.image.Config.Env {
+			k, v := parseKeyValue(env)
+			d.state = d.state.AddEnv(k, v)
+		}
+		if d.image.Config.WorkingDir != "" {
+			if err = dispatchWorkdir(d, &instructions.WorkdirCommand{Path: d.image.Config.WorkingDir}, false, nil); err != nil {
+				return nil, nil, err
+			}
+		}
+		if d.image.Config.User != "" {
+			if err = dispatchUser(d, &instructions.UserCommand{User: d.image.Config.User}, false); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		d.state = d.state.Network(opt.ForceNetMode)
+
+		opt := dispatchOpt{
+			allDispatchStates: allDispatchStates,
+			metaArgs:          opt.MetaArgs,
+			shlex:             shlex,
+			sessionID:         opt.SessionID,
+			buildContext:      llb.NewState(buildContext),
+			proxyEnv:          proxyEnv,
+			cacheIDNamespace:  opt.CacheIDNamespace,
+			buildPlatforms:    platformOpt.buildPlatforms,
+			targetPlatform:    platformOpt.targetPlatform,
+			extraHosts:        opt.ExtraHosts,
+			copyImage:         opt.OverrideCopyImage,
+			llbCaps:           opt.LLBCaps,
+		}
+		if opt.copyImage == "" {
+			opt.copyImage = DefaultCopyImage
+		}
+
+		if err = dispatchOnBuild(d, d.image.Config.OnBuild, opt); err != nil {
+			return nil, nil, err
+		}
+
+		for _, cmd := range d.commands {
+			if err := dispatch(d, cmd, opt); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		for p := range d.ctxPaths {
+			ctxPaths[p] = struct{}{}
+		}
+	}
+
+	if len(opt.Labels) != 0 && target.image.Config.Labels == nil {
+		target.image.Config.Labels = make(map[string]string, len(opt.Labels))
+	}
+	for k, v := range opt.Labels {
+		target.image.Config.Labels[k] = v
+	}
+
+	opts := []llb.LocalOption{
+		llb.SessionID(opt.SessionID),
+		llb.ExcludePatterns(opt.Excludes),
+		llb.SharedKeyHint(opt.ContextLocalName),
+		WithInternalName("load build context"),
+	}
+
+	if includePatterns := normalizeContextPaths(ctxPaths); includePatterns != nil {
+		opts = append(opts, llb.FollowPaths(includePatterns))
+	}
+
+	bc := llb.Local(opt.ContextLocalName, opts...)
+	if opt.BuildContext != nil {
+		bc = *opt.BuildContext
+	}
+	buildContext.Output = bc.Output()
+
+	defaults := []llb.ConstraintsOpt{
+		llb.Platform(platformOpt.targetPlatform),
+	}
+
+	if opt.LLBCaps != nil {
+		defaults = append(defaults, llb.WithCaps(*opt.LLBCaps))
+	}
+	st := target.state.SetMarshalDefaults(defaults...)
+
+	if !platformOpt.implicitTarget {
+		target.image.OS = platformOpt.targetPlatform.OS
+		target.image.Architecture = platformOpt.targetPlatform.Architecture
+		target.image.Variant = platformOpt.targetPlatform.Variant
+	}
+
+	return &st, &target.image, nil
+}
+
+func metaArgsToMap(metaArgs []instructions.KeyValuePairOptional) map[string]string {
+	m := map[string]string{}
+
+	for _, arg := range metaArgs {
+		m[arg.Key] = arg.ValueString()
+	}
+	return m
+}
+
+func toCommand(ic instructions.Command, allDispatchStates *dispatchStates) (command, error) {
+	cmd := command{Command: ic}
+	if c, ok := ic.(*instructions.CopyCommand); ok {
+		if c.From != "" {
+			var stn *dispatchState
+			index, err := strconv.Atoi(c.From)
+			if err != nil {
+				stn, ok = allDispatchStates.findStateByName(c.From)
+				if !ok {
+					stn = &dispatchState{
+						stage:        instructions.Stage{BaseName: c.From},
+						deps:         make(map[*dispatchState]struct{}),
+						unregistered: true,
+					}
+				}
+			} else {
+				stn, err = allDispatchStates.findStateByIndex(index)
+				if err != nil {
+					return command{}, err
+				}
+			}
+			cmd.sources = []*dispatchState{stn}
+		}
+	}
+
+	if ok := detectRunMount(&cmd, allDispatchStates); ok {
+		return cmd, nil
+	}
+	return cmd, nil
+}
+
+type dispatchOpt struct {
+	allDispatchStates *dispatchStates
+	metaArgs          []instructions.KeyValuePairOptional
+	buildArgValues    map[string]string
+	shlex             *shell.Lex
+	sessionID         string
+	buildContext      llb.State
+	proxyEnv          *llb.ProxyEnv
+	cacheIDNamespace  string
+	targetPlatform    specs.Platform
+	buildPlatforms    []specs.Platform
+	extraHosts        []llb.HostIP
+	copyImage         string
+	llbCaps           *apicaps.CapSet
+}
+
+func dispatch(d *dispatchState, cmd command, opt dispatchOpt) error {
+	if ex, ok := cmd.Command.(instructions.SupportsSingleWordExpansion); ok {
+		err := ex.Expand(func(word string) (string, error) {
+			return opt.shlex.ProcessWordWithMap(word, toEnvMap(d.buildArgs, d.image.Config.Env))
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	var err error
+	switch c := cmd.Command.(type) {
+	case *instructions.MaintainerCommand:
+		err = dispatchMaintainer(d, c)
+	case *instructions.EnvCommand:
+		err = dispatchEnv(d, c)
+	case *instructions.RunCommand:
+		err = dispatchRun(d, c, opt.proxyEnv, cmd.sources, opt)
+	case *instructions.WorkdirCommand:
+		err = dispatchWorkdir(d, c, true, &opt)
+	case *instructions.AddCommand:
+		err = dispatchCopy(d, c.SourceAndDest, opt.buildContext, true, c, c.Chown, opt)
+		if err == nil {
+			for _, src := range c.Sources() {
+				if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
+					d.ctxPaths[path.Join("/", filepath.ToSlash(src))] = struct{}{}
+				}
+			}
+		}
+
+	case *instructions.LabelCommand:
+		err = dispatchLabel(d, c)
+	case *instructions.OnBuildCommand:
+		err = dispatchOnbuild(d, c)
+	case *instructions.CmdCommand:
+		err = dispatchCmd(d, c)
+	case *instructions.EntryPointCommand:
+		err = dispatchEntrypoint(d, c)
+	case *instructions.HealthCheckCommand:
+		err = dispatchHealthCheck(d, c)
+	case *instructions.ExposeCommand:
+		err = dispatchExpose(d, c, opt.shlex)
+	case *instructions.UserCommand:
+		err = dispatchUser(d, c, true)
+	case *instructions.VolumeCommand:
+		err = dispatchVolume(d, c)
+	case *instrcutions.ShellCommand:
+		err = dispatchShell(d, c)
+	case *instructions.ArgCommand:
+		err = dispatchArg(d, c, opt.metaArgs, opt.buildArgValues)
+	case *instructions.CopyCommand:
+		l := opt.buildContext
+		if len(cmd.sources) != 0 {
+			l = cmd.sources[0].state
+		}
+		err = dispatchCopy(d, c.SourceAndDest, l, false, c, c.Chown, opt)
+		if err == nil && len(cmd.sources) == 0 {
+			for _, src := range c.Sources() {
+				d.ctxPaths[path.Join("/", filepath.ToSlash(src))] = struct{}{}
+			}
+		}
+	default:
+	}
+	return err
 }
