@@ -157,7 +157,7 @@ func (r *RaftAlg) Commit() <-chan string {
 }
 
 func (r *RaftAlg) DoneReplayWAL() <-chan struct{} {
-	return r.DoneRestoreLogC
+	return r.doneRestoreLogC
 }
 
 func (r *RaftAlg) Process(ctx context.Context, m raftpb.Message) error {
@@ -171,7 +171,7 @@ func (r *RaftAlg) IsIDRemoved(id uint64) bool {
 func (r *RaftAlg) ReportUnreachable(id uint64)                          {}
 func (r *RaftAlg) ReportSnapshot(id uint64, status raft.SnapshotStatus) {}
 
-func (r *RaftAlg) ReplayWAL(ctx context.Context) (*wal.WAL, error) {
+func (r *RaftAlg) replayWAL(ctx context.Context) (*wal.WAL, error) {
 	if !wal.Exist(r.waldir) {
 		_ = os.Mkdir(r.waldir, 0750)
 		w, _ := wal.Create(r.waldir, nil)
@@ -281,7 +281,7 @@ func (r *RaftAlg) serveChannels(ctx context.Context) error {
 
 			r.transport.Send(rd.Messages)
 
-			err := r.publishEntries(ctx, rd.CommitedEntries)
+			err := r.publishEntries(ctx, rd.CommittedEntries)
 			if err != nil {
 				return err
 			}

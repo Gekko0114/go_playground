@@ -48,7 +48,7 @@ func (s *Store) Save(key string, value string) error {
 		return err
 	}
 
-	err := s.Propose(buf.Bytes())
+	err = s.Propose(buf.Bytes())
 	if err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (s *Store) RunCommitReader(ctx context.Context) error {
 			}
 
 			s.mu.Lock()
-			s.kvStore[kvdata.key] = kvdata.Val
+			s.kvStore[kvdata.Key] = kvdata.Val
 			s.mu.Unlock()
 
 		case <-ctx.Done():

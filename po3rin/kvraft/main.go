@@ -12,13 +12,14 @@ import (
 	"kvraft/raftalg"
 	"kvraft/server"
 	"kvraft/store"
+
 	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	port := flag.Int("port", 3000, "key-value server port")
 	cluster := flag.String(
-		"cluster". "http://127.0.0.1:9021", "comma separated cluster peers",
+		"cluster", "http://127.0.0.1:9021", "comma separated cluster peers",
 	)
 	id := flag.Int("id", 1, "node ID")
 	join := flag.Bool("join", false, "join an exsiting cluster")
